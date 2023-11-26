@@ -1,0 +1,2 @@
+COMPILER=msys2
+C_STANDARD=c2x

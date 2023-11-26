@@ -1,0 +1,100 @@
+#!/bin/sh -e
+##:
+#h: Usage: busypack [-V] SCRIPT
+#h:
+#h: Pack a shell script into a self extracting binary. If found
+#h: it will use "hsh" to bundle the script.
+#h:
+#h: If a script containes '#busypack: F1 F2' then F1 and F2 will be
+#h: searched for in "~/.busypack" and added to the binary.
+##:
+busypack() {
+    local OPTIND optopt arg out pwd="$(pwd)" ops=
+    
+    ## Parse command line arguments.
+    while getopts "V" optopt; do
+        case $optopt in
+            V)  busypack_show_variables; return 0;;
+            \?) return 1;;
+        esac
+    done
+    shift $(( $OPTIND - 1 ))
+
+    ##
+    local t="$(mktemp)"
+    for arg in "$@"; do
+        case "${BUSYPACK_USE_HSH}" in
+            y) hsh -o "${t}" "${arg}";;
+            n) cp "${arg}" "${t}"    ;;
+        esac
+        out="${pwd}/$(basename "$arg" .sh).exe"
+        cd "${BUSYPACK_SRCDIR}"
+        busypack_update "${t}"
+        echo "Creating ${out} ..."
+        "${BUSYPACK_CC}" \
+            -o "${out}" \
+            -std=c99 \
+            -Wall \
+            -I"${BUSYPACK_BINDIR}" \
+            -DSCRIPT_FILE="\"${t}\"" \
+            -DSCRIPT_NAME="\"$(basename "${arg}")\"" \
+            -DEXTRA_BINARIES=1 \
+            -DINSDIR="\"${BUSYPACK_INSDIR}\"" \
+            busypack.c
+        cd "${pwd}"
+    done
+    rm -f "${t}"
+}
+busypack_show_variables() {
+    echo "BUSYPACK_CC      : ${BUSYPACK_CC}"
+    echo "BUSYPACK_USE_HSH : ${BUSYPACK_USE_HSH}"
+    echo "BUSYPACK_SRCDIR  : ${BUSYPACK_SRCDIR}"
+    echo "BUSYPACK_BINDIR  : ${BUSYPACK_BINDIR}"
+    echo "BUSYPACK_INSDIR  : ${BUSYPACK_INSDIR}"
+}
+busypack_calc_variables() {
+    BUSYPACK_CC="${BUSYPACK_CC:-x86_64-w64-mingw32-gcc}"
+    if test -n "${BUSYPACK_USE_HSH}"; then
+        true
+    elif which hsh >/dev/null 2>&1; then
+        BUSYPACK_USE_HSH="y"
+    else
+        BUSYPACK_USE_HSH="n"
+    fi
+    BUSYPACK_SRCDIR="${BUSYPACK_SRCDIR:-$(dirname "$0")/../lib/busypack}"
+    BUSYPACK_BINDIR="${BUSYPACK_BINDIR:-${HOME}/.busypack}"
+    BUSYPACK_INSDIR="BusyPack"
+}
+## -------------------------------------------------------------------
+busypack_update() {
+    local x b n
+    local t1="$(mktemp)"
+    local t2="$(mktemp)"
+    mkdir -p "${BUSYPACK_BINDIR}"
+    for x in $(sed -n 's/^\#\#* *busypack: *//p' "$1" | tr ' ' '\n' | sort -u); do
+        echo "Packing ${x} ..."
+        b="$(basename "$x")"
+        n="$(basename "$b" | sed 's|\.[^\.]*$||' | tr '-' '_' | tr '.' '_')"
+        cat <<-EOF >> "${t1}"
+	INCBIN(${n}, "${x}");
+	EOF
+        cat <<-EOF >> "${t2}"
+	   extract(getenv("LOCALAPPDATA"), "${BUSYPACK_INSDIR}/${b}", b_${n}_data, b_${n}_size);
+	EOF
+    done
+    cat <<-EOF > "${BUSYPACK_BINDIR}/busypack-extra.h"
+	$(cat ${t1})
+	static void extract_binaries(void) {
+	$(cat ${t2})
+	}
+	EOF
+    rm -f "${t1}" "${t2}"
+}
+## -------------------------------------------------------------------
+busypack_calc_variables
+if test @"$(basename "$0")" = @"busypack";then
+    case "${1}" in
+        ''|-h|--help) sed -n 's/^ *#h: \{0,1\}//p' "$0";;
+        *)            busypack "$@"; exit 0            ;;
+    esac
+fi
